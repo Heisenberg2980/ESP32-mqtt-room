@@ -36,6 +36,11 @@ extern "C" {
 #include "Common_settings.h"
 #include "Settings.h"
 
+#ifdef BME280_enable
+#include <Adafruit_BME280.h>
+Adafruit_BME280 bme; // I2C
+#endif
+
 static const int scanTime = singleScanTime;
 static const int waitTime = scanInterval;
 static const uint16_t beaconUUID = 0xFEAA;
@@ -45,6 +50,9 @@ static const int defaultTxPower = TxDefault;
 static const int defaultTxPower = -72;
 #endif
 #define ENDIAN_CHANGE_U16(x) ((((x)&0xFF00)>>8) + (((x)&0xFF)<<8))
+#ifdef BME280_enable
+static unsigned BME280_status;
+#endif
 
 WiFiClient espClient; 
 AsyncMqttClient mqttClient;
@@ -54,6 +62,9 @@ bool updateInProgress = false;
 String localIp;
 byte retryAttempts = 0;
 unsigned long last = 0;
+#ifdef BME280_enable
+unsigned long lastBME280 = 0;
+#endif
 BLEScan* pBLEScan;
 TaskHandle_t BLEScan;
 float distance;
@@ -138,6 +149,30 @@ bool sendTelemetry(int deviceCount = -1, int reportCount = -1) {
 	}
 
 }
+
+#ifdef BME280_enable
+bool sendBME280() {
+	if (debug) mqttClient.publish(debugTopic, 0, 0, "sendBME280 start");
+	StaticJsonDocument<256> BME280;
+	BME280["temperature"] = bme.readTemperature();
+	BME280["humidity"] = bme.readHumidity();
+	BME280["pressure"] = bme.readPressure() / 100.0F;
+
+	char BME280MessageBuffer[258];
+	serializeJson(BME280, BME280MessageBuffer);
+
+	if (mqttClient.publish(temperatureTopic, 0, 0, BME280MessageBuffer) == true) {
+		Serial.println("BME280 info sent");
+		if (debug) mqttClient.publish(debugTopic, 0, 0, "sendBME280 end");
+		return true;
+	} else {
+		Serial.println("Error sending BME280 info");
+		mqttClient.publish(errorTopic, 0, 0, "Error sending BME280 info");
+		if (debug) mqttClient.publish(debugTopic, 0, 0, "sendBME280 end");
+		return false;
+	}
+}
+#endif
 
 void connectToWifi() {
   Serial.println("Connecting to WiFi...");
@@ -477,6 +512,15 @@ void scanForDevices(void * parameter) {
 				}
 				sendTelemetry(devicesCount, devicesReported);
 				pBLEScan->clearResults();
+ #ifdef BME280_enable
+				if ((millis() - lastBME280 > 30000) && BME280_status) {
+					sendBME280();
+					lastBME280 = millis();
+				}
+				else {
+					if (debug) mqttClient.publish(debugTopic, 0, 0, "BME280 info not sent");
+				}
+#endif                                                          
 			} else {
 				Serial.println("Cannot report; mqtt disconnected");
 				if (xTimerIsTimerActive(mqttReconnectTimer) != pdFALSE) {
@@ -530,6 +574,29 @@ void setup() {
 
   Serial.begin(115200);
 
+  #ifdef BME280_enable
+    // default settings
+    BME280_status = bme.begin();  
+    // You can also pass in a Wire library object like &Wire2
+    // status = bme.begin(0x76, &Wire2)
+    if (!BME280_status) {
+        Serial.println("Could not find a valid BME280 sensor, check wiring, address, sensor ID!");
+        Serial.print("SensorID was: 0x"); Serial.println(bme.sensorID(),16);
+        Serial.print("        ID of 0xFF probably means a bad address, a BMP 180 or BMP 085\n");
+        Serial.print("   ID of 0x56-0x58 represents a BMP 280,\n");
+        Serial.print("        ID of 0x60 represents a BME 280.\n");
+        Serial.print("        ID of 0x61 represents a BME 680.\n");
+        //while (1) delay(10);
+    }
+
+    bme.setSampling(Adafruit_BME280::MODE_NORMAL,
+                    Adafruit_BME280::SAMPLING_X16,  // temperature
+                    Adafruit_BME280::SAMPLING_X16, // pressure
+                    Adafruit_BME280::SAMPLING_X16,  // humidity
+                    Adafruit_BME280::FILTER_X16,
+                    //Adafruit_BME280::FILTER_OFF,
+                    Adafruit_BME280::STANDBY_MS_0_5 );
+#endif                      
 	pinMode(LED_BUILTIN, OUTPUT);
 	digitalWrite(LED_BUILTIN, LED_ON);
 
