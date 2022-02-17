@@ -145,6 +145,36 @@ void connectToWifi() {
 	WiFi.begin(ssid, password);
 }
 
+bool handleWifiDisconnect() {
+	Serial.println("WiFi has been disconnected.");
+	if (WiFi.isConnected()) {
+		Serial.println("WiFi appears to be connected. Not retrying.");
+		return true;
+	}
+	if (retryAttempts > 10) {
+		Serial.println("Too many retries. Restarting");
+		ESP.restart();
+	} else {
+		retryAttempts++;
+	}
+	if (mqttClient.connected()) {
+		mqttClient.disconnect();
+	}
+	if (xTimerIsTimerActive(mqttReconnectTimer) != pdFALSE) {
+		xTimerStop(mqttReconnectTimer, 0); // ensure we don't reconnect to MQTT while reconnecting to Wi-Fi
+	}
+
+	if (xTimerReset(wifiReconnectTimer, 0) == pdFAIL) {
+		Serial.println("failed to restart");
+		xTimerStart(wifiReconnectTimer, 0);
+		return false;
+	} else {
+		Serial.println("restarted");
+		return true;
+	}
+
+}
+
 void connectToMqtt() {
   Serial.print("Connecting to MQTT with ClientId ");
   Serial.println(hostname);
@@ -186,36 +216,6 @@ bool handleMqttDisconnect() {
 		handleWifiDisconnect();
 	}
     return true;
-}
-
-bool handleWifiDisconnect() {
-	Serial.println("WiFi has been disconnected.");
-	if (WiFi.isConnected()) {
-		Serial.println("WiFi appears to be connected. Not retrying.");
-		return true;
-	}
-	if (retryAttempts > 10) {
-		Serial.println("Too many retries. Restarting");
-		ESP.restart();
-	} else {
-		retryAttempts++;
-	}
-	if (mqttClient.connected()) {
-		mqttClient.disconnect();
-	}
-	if (xTimerIsTimerActive(mqttReconnectTimer) != pdFALSE) {
-		xTimerStop(mqttReconnectTimer, 0); // ensure we don't reconnect to MQTT while reconnecting to Wi-Fi
-	}
-
-	if (xTimerReset(wifiReconnectTimer, 0) == pdFAIL) {
-		Serial.println("failed to restart");
-		xTimerStart(wifiReconnectTimer, 0);
-		return false;
-	} else {
-		Serial.println("restarted");
-		return true;
-	}
-
 }
 
 void WiFiEvent(WiFiEvent_t event) {
