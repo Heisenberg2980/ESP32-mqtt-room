@@ -46,7 +46,7 @@ static const int defaultTxPower = -72;
 #endif
 #define ENDIAN_CHANGE_U16(x) ((((x)&0xFF00)>>8) + (((x)&0xFF)<<8))
 
-WiFiClient espClient;
+WiFiClient espClient; 
 AsyncMqttClient mqttClient;
 TimerHandle_t mqttReconnectTimer;
 TimerHandle_t wifiReconnectTimer;
