@@ -11,5 +11,3 @@ Settings_*.h
 .vscode/*
 Settings.h
 Common_settings.h
-src/Settings.h
-src/Common_settings.h
