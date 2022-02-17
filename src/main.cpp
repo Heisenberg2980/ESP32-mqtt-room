@@ -33,13 +33,8 @@ extern "C" {
 #include "BLEBeacon.h"
 #include "BLEEddystoneTLM.h"
 #include "BLEEddystoneURL.h"
+#include "Common_settings.h"
 #include "Settings.h"
-
-#ifdef htuSensorTopic
-	#define tempTopic htuSensorTopic "/temperature"
-	#define humidityTopic htuSensorTopic "/humidity"
-	#include "sensors/sensor_htu21d.h"
-#endif
 
 static const int scanTime = singleScanTime;
 static const int waitTime = scanInterval;
@@ -61,6 +56,7 @@ byte retryAttempts = 0;
 unsigned long last = 0;
 BLEScan* pBLEScan;
 TaskHandle_t BLEScan;
+float distance;
 
 String getProximityUUIDString(BLEBeacon beacon) {
   std::string serviceData = beacon.getProximityUUID().toString().c_str();
@@ -111,29 +107,6 @@ float calculateDistance(int rssi, int txPower) {
 
 }
 
-#ifdef htuSensorTopic
-
-void reportSensorValues() {
-	if (htuSensorIsConnected()) {
-		char temp[8];
-		char humidity[8];
-
-		dtostrf(getTemp(), 0, 1, temp); 						// convert float to string with one decimal place precision
-		dtostrf(getHumidity(), 0, 1, humidity);			// convert float to string with one decimal place precision
-
-		if (mqttClient.publish(tempTopic, 0, 0, temp) == true) {
-			Serial.printf("Temperature %s sent\t", temp);
-		}
-
-		if (mqttClient.publish(humidityTopic, 0, 0, humidity) == true) {
-			Serial.printf("Humidity %s sent\n\r", humidity);
-		}
-	}
-}
-
-#endif
-
-
 bool sendTelemetry(int deviceCount = -1, int reportCount = -1) {
 	StaticJsonDocument<256> tele;
 	tele["room"] = room;
@@ -156,10 +129,6 @@ bool sendTelemetry(int deviceCount = -1, int reportCount = -1) {
 	char teleMessageBuffer[258];
 	serializeJson(tele, teleMessageBuffer);
 
-	#ifdef htuSensorTopic
-    reportSensorValues();
-	#endif
-
 	if (mqttClient.publish(telemetryTopic, 0, 0, teleMessageBuffer) == true) {
 		Serial.println("Telemetry sent");
 		return true;
@@ -172,16 +141,20 @@ bool sendTelemetry(int deviceCount = -1, int reportCount = -1) {
 
 void connectToWifi() {
   Serial.println("Connecting to WiFi...");
-	WiFi.begin(ssid, password);
 	WiFi.setHostname(hostname);
+	WiFi.begin(ssid, password);
 }
 
 void connectToMqtt() {
-  Serial.println("Connecting to MQTT");
+  Serial.print("Connecting to MQTT with ClientId ");
+  Serial.println(hostname);
 	if (WiFi.isConnected() && !updateInProgress) {
+		mqttClient.setServer(mqttHost, mqttPort);
+		mqttClient.setWill(availabilityTopic, 0, 1, "DISCONNECTED");
+		mqttClient.setKeepAlive(60);
 		mqttClient.setCredentials(mqttUser, mqttPassword);
 		mqttClient.setClientId(hostname);
-	  mqttClient.connect();
+	  	mqttClient.connect();
 	} else {
 		Serial.println("Cannot reconnect MQTT - WiFi error");
 		handleWifiDisconnect();
@@ -189,6 +162,7 @@ void connectToMqtt() {
 }
 
 bool handleMqttDisconnect() {
+	Serial.println("MQTT has been disconnected.");
 	if (updateInProgress) {
 		Serial.println("Not retrying MQTT connection - OTA update in progress");
 		return true;
@@ -207,13 +181,15 @@ bool handleMqttDisconnect() {
 		} else {
 			Serial.println("restarted");
 		}
-  } else {
+    } else {
 		Serial.print("Disconnected from WiFi; starting WiFi reconnect timiler\t");
 		handleWifiDisconnect();
 	}
+    return true;
 }
 
 bool handleWifiDisconnect() {
+	Serial.println("WiFi has been disconnected.");
 	if (WiFi.isConnected()) {
 		Serial.println("WiFi appears to be connected. Not retrying.");
 		return true;
@@ -285,7 +261,10 @@ void WiFiEvent(WiFiEvent_t event) {
 					Serial.println("STA Stop");
 					handleWifiDisconnect();
 					break;
-
+			default:
+					Serial.println("Event not considered");
+					handleWifiDisconnect();
+					break;
     }
 }
 
@@ -294,18 +273,19 @@ void onMqttConnect(bool sessionPresent) {
 	retryAttempts = 0;
 
 	if (mqttClient.publish(availabilityTopic, 0, 1, "CONNECTED") == true) {
-		Serial.print("Success sending message to topic:\t");
-		Serial.println(availabilityTopic);
+		//Serial.print("Success sending message to topic:\t");
+		//Serial.println(availabilityTopic);
 	} else {
 		Serial.println("Error sending message");
 	}
 
-	sendTelemetry();
+	//sendTelemetry();
 
 }
 
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
-  Serial.println("Disconnected from MQTT.");
+  Serial.print("Disconnected from MQTT. Reason: ");
+  Serial.println(static_cast<uint8_t>(reason));
   handleMqttDisconnect();
 }
 
@@ -318,29 +298,9 @@ bool reportDevice(BLEAdvertisedDevice advertisedDevice) {
 	String mac_address = advertisedDevice.getAddress().toString().c_str();
 	mac_address.replace(":","");
 	mac_address.toLowerCase();
-
-
-	//Check scanned MAC Address against a list of allowed MAC Addresses
-
-	if (allowedListCheck) {
-		bool allowedListFound = false;
-		for (uint32_t x = 0; x < allowedListNumberOfItems; x++) {
-			if (mac_address == allowedList[x]) {
-				allowedListFound = true;
-			}
-		}
-
-		if (allowedListFound == false) {
-			return false;
-		}
-	}
-	// --------------
-
-
 	// Serial.print("mac:\t");
 	// Serial.println(mac_address);
 	int rssi = advertisedDevice.getRSSI();
-	float distance;
 
 	doc["id"] = mac_address;
 	doc["uuid"] = mac_address;
@@ -365,12 +325,6 @@ bool reportDevice(BLEAdvertisedDevice advertisedDevice) {
 
 	 if (advertisedDevice.getServiceDataUUID().equals(BLEUUID(beaconUUID))==true) {  // found Eddystone UUID
 		// Serial.printf("is Eddystone: %d %s length %d\n", advertisedDevice.getServiceDataUUID().bitSize(), advertisedDevice.getServiceDataUUID().toString().c_str(),strServiceData.length());
-	       // Update distance variable for Eddystone BLE devices
-	    BLEBeacon oBeacon = BLEBeacon();
-	    distance = calculateDistance(rssi, oBeacon.getSignalPower());
-	    doc["distance"] = distance;
-
-
 		if (cServiceData[0]==0x10) {
 			 BLEEddystoneURL oBeacon = BLEEddystoneURL();
 			 oBeacon.setData(strServiceData);
@@ -554,7 +508,8 @@ void configureOTA() {
     })
     .onProgress([](unsigned int progress, unsigned int total) {
 			byte percent = (progress / (total / 100));
-      Serial.printf("Progress: %u% \n\r", percent);
+      Serial.printf("Progress: %u", percent);
+      Serial.println("");
 			digitalWrite(LED_BUILTIN, percent % 2);
     })
     .onError([](ota_error_t error) {
@@ -568,7 +523,7 @@ void configureOTA() {
     });
 	ArduinoOTA.setHostname(hostname);
 	ArduinoOTA.setPort(8266);
-  ArduinoOTA.begin();
+  	ArduinoOTA.begin();
 }
 
 void setup() {
@@ -581,18 +536,10 @@ void setup() {
   mqttReconnectTimer = xTimerCreate("mqttTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToMqtt));
   wifiReconnectTimer = xTimerCreate("wifiTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToWifi));
 
-  #ifdef htuSensorTopic
-		sensor_setup();
-	#endif
-
   WiFi.onEvent(WiFiEvent);
 
   mqttClient.onConnect(onMqttConnect);
   mqttClient.onDisconnect(onMqttDisconnect);
-
-  mqttClient.setServer(mqttHost, mqttPort);
-	mqttClient.setWill(availabilityTopic, 0, 1, "DISCONNECTED");
-	mqttClient.setKeepAlive(60);
 
   connectToWifi();
 
@@ -600,6 +547,7 @@ void setup() {
 
   BLEDevice::init("");
   pBLEScan = BLEDevice::getScan(); //create new scan
+  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
   pBLEScan->setActiveScan(activeScan);
 	pBLEScan->setInterval(bleScanInterval);
 	pBLEScan->setWindow(bleScanWindow);
