@@ -9,3 +9,7 @@ include/
 Settings_*.h
 .pio/*
 .vscode/*
+Settings.h
+Common_settings.h
+src/Settings.h
+src/Common_settings.h
