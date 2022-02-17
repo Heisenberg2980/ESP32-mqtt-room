@@ -13,3 +13,4 @@ Settings.h
 Common_settings.h
 Settings-rename.h
 Common_settings-rename.h
+platformio.ini
