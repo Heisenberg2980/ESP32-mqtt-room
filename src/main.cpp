@@ -177,6 +177,7 @@ bool sendBME280() {
 void connectToWifi() {
   Serial.println("Connecting to WiFi...");
   WiFi.disconnect();
+  WiFi.mode(WIFI_STA);
   WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
 	WiFi.setHostname(hostname);
 	WiFi.begin(ssid, password);
