@@ -176,6 +176,8 @@ bool sendBME280() {
 
 void connectToWifi() {
   Serial.println("Connecting to WiFi...");
+  WiFi.disconnect();
+  WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
 	WiFi.setHostname(hostname);
 	WiFi.begin(ssid, password);
 }
@@ -567,7 +569,7 @@ void configureOTA() {
     });
 	ArduinoOTA.setHostname(hostname);
 	ArduinoOTA.setPort(8266);
-  	ArduinoOTA.begin();
+  ArduinoOTA.begin();
 }
 
 void setup() {
