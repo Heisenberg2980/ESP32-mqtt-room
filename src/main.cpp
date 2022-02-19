@@ -36,10 +36,8 @@ extern "C" {
 #include "Common_settings.h"
 #include "Settings.h"
 
-#ifdef BME280_enable
 #include <Adafruit_BME280.h>
 Adafruit_BME280 bme; // I2C
-#endif
 
 static const int scanTime = singleScanTime;
 static const int waitTime = scanInterval;
@@ -53,6 +51,18 @@ static const int defaultTxPower = -72;
 #ifdef BME280_enable
 static unsigned BME280_status;
 #endif
+#ifdef Deep_sleep
+#define LED_GPIO 22   
+#else
+#define LED_GPIO LED_BUILTIN  
+#endif
+
+#define uS_TO_M_FACTOR 3600000000ULL  /* Conversion factor for micro seconds to hours */
+#define TIME_TO_SLEEP  6        /* Time ESP32 will go to sleep (in hours) */
+static int voltage = 0;
+static int loopCount = 0;
+static int powerOn = 0;
+
 
 WiFiClient espClient; 
 AsyncMqttClient mqttClient;
@@ -62,9 +72,8 @@ bool updateInProgress = false;
 String localIp;
 byte retryAttempts = 0;
 unsigned long last = 0;
-#ifdef BME280_enable
 unsigned long lastBME280 = 0;
-#endif
+unsigned long lastSleep = 0;
 BLEScan* pBLEScan;
 TaskHandle_t BLEScan;
 float distance;
@@ -118,7 +127,7 @@ float calculateDistance(int rssi, int txPower) {
 
 }
 
-bool sendTelemetry(int deviceCount = -1, int reportCount = -1) {
+bool sendTelemetry(int deviceCount = -1, int reportCount = -1, int voltage = -1, int loopCount = -1, int powerOn = -1) {
 	StaticJsonDocument<256> tele;
 	tele["room"] = room;
 	tele["ip"] = localIp;
@@ -137,6 +146,21 @@ bool sendTelemetry(int deviceCount = -1, int reportCount = -1) {
     tele["rept_ct"] = reportCount;
 	}
 
+	if (voltage > -1) {
+		Serial.printf("voltage: %d\n\r",voltage);
+    tele["voltage"] = voltage;
+	}
+
+	if (loopCount > -1) {
+		Serial.printf("loop_count: %d\n\r",loopCount);
+    tele["loop_ct"] = loopCount;
+	}
+
+	if (powerOn > -1) {
+		Serial.printf("power_on: %d\n\r",powerOn);
+    tele["power_on"] = powerOn;
+	}
+
 	char teleMessageBuffer[258];
 	serializeJson(tele, teleMessageBuffer);
 
@@ -147,10 +171,8 @@ bool sendTelemetry(int deviceCount = -1, int reportCount = -1) {
 		Serial.println("Error sending telemetry");
 		return false;
 	}
-
 }
 
-#ifdef BME280_enable
 bool sendBME280() {
 	if (debug) mqttClient.publish(debugTopic, 0, 0, "sendBME280 start");
 	StaticJsonDocument<256> BME280;
@@ -172,7 +194,6 @@ bool sendBME280() {
 		return false;
 	}
 }
-#endif
 
 void connectToWifi() {
   Serial.println("Connecting to WiFi...");
@@ -190,8 +211,10 @@ bool handleWifiDisconnect() {
 		return true;
 	}
 	if (retryAttempts > 10) {
+#ifndef Deep_sleep
 		Serial.println("Too many retries. Restarting");
 		ESP.restart();
+#endif
 	} else {
 		retryAttempts++;
 	}
@@ -236,8 +259,10 @@ bool handleMqttDisconnect() {
 		return true;
 	}
 	if (retryAttempts > 10) {
+#ifndef Deep_sleep
 		Serial.println("Too many retries. Restarting");
 		ESP.restart();
+#endif
 	} else {
 		retryAttempts++;
 	}
@@ -258,10 +283,9 @@ bool handleMqttDisconnect() {
 
 void WiFiEvent(WiFiEvent_t event) {
     Serial.printf("[WiFi-event] event: %x\n\r", event);
-
 		switch(event) {
 	    case SYSTEM_EVENT_STA_GOT_IP:
-					digitalWrite(LED_BUILTIN, !LED_ON);
+					digitalWrite(LED_GPIO, !LED_ON);
 	        Serial.print("IP address: \t");
 	        Serial.println(WiFi.localIP());
 					localIp = WiFi.localIP().toString().c_str();
@@ -275,7 +299,7 @@ void WiFiEvent(WiFiEvent_t event) {
 					retryAttempts = 0;
 	        break;
 	    case SYSTEM_EVENT_STA_DISCONNECTED:
-					digitalWrite(LED_BUILTIN, LED_ON);
+					digitalWrite(LED_GPIO, LED_ON);
 	        Serial.println("WiFi lost connection, resetting timer\t");
 					handleWifiDisconnect();
 					break;
@@ -488,9 +512,9 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
 
 	void onResult(BLEAdvertisedDevice advertisedDevice) {
 
-		digitalWrite(LED_BUILTIN, LED_ON);
+		digitalWrite(LED_GPIO, LED_ON);
 		vTaskDelay(10 / portTICK_PERIOD_MS);
-		digitalWrite(LED_BUILTIN, !LED_ON);
+		digitalWrite(LED_GPIO, !LED_ON);
 
 	}
 
@@ -498,8 +522,11 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
 
 void scanForDevices(void * parameter) {
 	while(1) {
+	    voltage += analogRead(VIN_GPIO);
+	    loopCount += 1;
 		if (!updateInProgress && WiFi.isConnected() && (millis() - last > (waitTime * 1000) || last == 0)) {
-
+			powerOn = analogRead(POWER_GPIO);
+	        voltage = voltage / loopCount;
 			Serial.print("Scanning...\t");
 			BLEScanResults foundDevices = pBLEScan->start(scanTime);
 			int devicesCount = foundDevices.getCount();
@@ -513,9 +540,13 @@ void scanForDevices(void * parameter) {
 						devicesReported++;
 					}
 				}
+#ifdef Deep_sleep
+				sendTelemetry(devicesCount, devicesReported, voltage, loopCount, powerOn);
+#else
 				sendTelemetry(devicesCount, devicesReported);
+#endif
 				pBLEScan->clearResults();
- #ifdef BME280_enable
+#ifdef BME280_enable
 				if ((millis() - lastBME280 > 30000) && BME280_status) {
 					sendBME280();
 					lastBME280 = millis();
@@ -534,8 +565,26 @@ void scanForDevices(void * parameter) {
 					handleMqttDisconnect();
 				}
 			}
+			loopCount = 0;
+			voltage = 0;
 			last = millis();
 	  }
+#ifdef Deep_sleep
+		if (powerOn < 300 && !updateInProgress) {
+			if (((millis() - lastSleep > 60000) && WiFi.isConnected() && mqttClient.connected()) || (millis() - lastSleep > 120000)) {
+				mqttClient.publish(availabilityTopic, 0, 1, "SLEEPING");
+				Serial.println("Going to sleep in 5 seconds");
+				delay(5000);
+				esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_M_FACTOR);
+				Serial.println("Going to sleep for " + String(TIME_TO_SLEEP) + " Hours");
+				Serial.flush(); 
+				esp_deep_sleep_start();
+			}
+		}
+		else {
+			lastSleep = millis();
+		}
+#endif                                                          
 	}
 }
 
@@ -550,14 +599,14 @@ void configureOTA() {
     })
     .onEnd([]() {
 			updateInProgress = false;
-			digitalWrite(LED_BUILTIN, !LED_ON);
+			digitalWrite(LED_GPIO, !LED_ON);
       Serial.println("\n\rEnd");
     })
     .onProgress([](unsigned int progress, unsigned int total) {
 			byte percent = (progress / (total / 100));
       Serial.printf("Progress: %u", percent);
       Serial.println("");
-			digitalWrite(LED_BUILTIN, percent % 2);
+			digitalWrite(LED_GPIO, percent % 2);
     })
     .onError([](ota_error_t error) {
       Serial.printf("Error[%u]: ", error);
@@ -576,6 +625,15 @@ void configureOTA() {
 void setup() {
 
   Serial.begin(115200);
+
+	pinMode(LED_GPIO, OUTPUT);
+	digitalWrite(LED_GPIO, LED_ON);
+#ifdef Deep_sleep
+	pinMode (VIN_GPIO, INPUT);
+	pinMode (POWER_GPIO, INPUT);
+
+	esp_sleep_enable_ext0_wakeup(POWER_GPIO,1); //1 = High, 0 = Low
+#endif                                                          
 
   #ifdef BME280_enable
     // default settings
@@ -600,8 +658,6 @@ void setup() {
                     //Adafruit_BME280::FILTER_OFF,
                     Adafruit_BME280::STANDBY_MS_0_5 );
 #endif                      
-	pinMode(LED_BUILTIN, OUTPUT);
-	digitalWrite(LED_BUILTIN, LED_ON);
 
   mqttReconnectTimer = xTimerCreate("mqttTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToMqtt));
   wifiReconnectTimer = xTimerCreate("wifiTimer", pdMS_TO_TICKS(2000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToWifi));
