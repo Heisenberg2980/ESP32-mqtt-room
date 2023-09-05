@@ -164,7 +164,7 @@ bool sendTelemetry(int deviceCount = -1, int reportCount = -1, int voltage = -1,
 	char teleMessageBuffer[258];
 	serializeJson(tele, teleMessageBuffer);
 
-	if (mqttClient.publish(telemetryTopic, 0, 0, teleMessageBuffer) == true) {
+	if (mqttClient.publish(telemetryTopic, 0, 1, teleMessageBuffer) == true) {
 		Serial.println("Telemetry sent");
 		return true;
 	} else {
